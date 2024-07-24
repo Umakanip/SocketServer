@@ -27,14 +27,22 @@ io.on("connection", (socket) => {
 
   socket.on("send_message", async (data) => {
     console.log("Send MEssage:", data);
-    await Chats.create({
-      // ChatID: data.ChatID,
+    const chat = await Chats.create({
       User1ID: data.SenderID,
       User2ID: data.receiverID,
       GroupID: 1,
       CreatedAt: data.SentAt,
     });
-    await Messages.create(data);
+    const chatID = chat.ChatID;
+    // console.log("Chats", Chats.ChatID);
+    await Messages.create({
+      ChatID: chatID,
+      SenderID: data.SenderID,
+      Content: data.Content,
+      SentAt: data.SentAt,
+      IsDeleted: data.IsDeleted || false,
+      IsPinned: data.IsPinned || false,
+    });
 
     // if (data.room) {
     //   // Notify the recipient
