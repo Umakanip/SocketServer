@@ -2,16 +2,20 @@ import { Server, Socket } from "socket.io";
 import http from "http";
 import cors from "cors";
 import express from "express";
-import Messages from "../server/src/models/MessageModel";
-import Chats from "../server/src/models/ChatModel";
-import Files from "../server/src/models/FileModel";
+import Messages from "../officechatbackend/src/models/MessageModel";
+import Chats from "../officechatbackend/src/models/ChatModel";
+import Files from "../officechatbackend/src/models/FileModel";
 import fs from "fs";
 import path from "path";
+import { RtcTokenBuilder, RtcRole } from 'agora-access-token';
 
 const app = express();
 app.use(cors());
 app.use(express.json()); // Add this to parse JSON bodies
 const PORT = 5000;
+
+const APP_ID: string = process.env.AGORA_APP_ID || '1369151da2df4f33bdd842b8c0797085';
+const APP_CERTIFICATE: string = process.env.AGORA_APP_CERTIFICATE || 'bce706ad36204216ad8aee3f48dc84b0';
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -20,6 +24,12 @@ const io = new Server(server, {
     methods: ["GET", "POST"],
   },
 });
+
+interface UserSocketMap {
+  [userId: string]: string;
+}
+
+const userSocketMap: UserSocketMap = {};
 
 io.on("connection", (socket) => {
   console.log(`User Connected: ${socket.id}`);
@@ -34,6 +44,11 @@ io.on("connection", (socket) => {
     io.emit("userStatusUpdate", userStatus);
   });
 
+  socket.on('register', (userId: string) => {
+    userSocketMap[userId] = socket.id;
+    console.log(`User ${userId} registered with socket ID ${socket.id}`);
+  });
+
   socket.on("send_message", async (data) => {
     console.log("Send Message:", data);
     const { fileBlob, filename, filetype, filesize, MessageID } =
@@ -43,6 +58,7 @@ io.on("connection", (socket) => {
     try {
       let chat;
       if (data.isGroupChat) {
+        console.log("if")
         if (!data.groupID) {
           throw new Error("GroupID is required for group chats");
         }
@@ -52,6 +68,7 @@ io.on("connection", (socket) => {
           CreatedAt: data.SentAt,
         });
       } else {
+        console.log("else")
         chat = await Chats.create({
           User1ID: data.SenderID,
           User2ID: data.receiverID,
@@ -113,8 +130,62 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on('callUsers', async (data: { channelName: string, callerId: number, receiverIds: number[] }) => {
+    console.log('---callUsers----', data);
+
+    const token: string = RtcTokenBuilder.buildTokenWithUid(
+      APP_ID,
+      APP_CERTIFICATE,
+      data.channelName,
+      0,
+      RtcRole.SUBSCRIBER,
+      Math.floor(Date.now() / 1000) + 36000
+    );
+    console.log('----token-----', token);
+    console.log("receiverIds", data.receiverIds);
+
+    data.receiverIds.forEach((receiverId) => {
+      const receiverSocketId = userSocketMap[receiverId];
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('incomingCall', { channelName: data.channelName, token, callerId: data.callerId });
+        console.log('Emitting incomingCall to', receiverSocketId);
+      } else {
+        console.log(`No socket found for receiver ${receiverId}`);
+      }
+    });
+  });
+
+  socket.on('callAccepted', (data: { channelName: string, callerId: number }) => {
+    const { channelName, callerId } = data;
+    const callerSocketId = userSocketMap[callerId];
+    if (callerSocketId) {
+      io.to(callerSocketId).emit('callAccepted', { channelName });
+      console.log(`Call accepted by ${callerId}`);
+    } else {
+      console.log(`No socket found for caller ${callerId}`);
+    }
+  });
+
+  socket.on('callRejected', (data: { channelName: string, callerId: number }) => {
+    const { channelName, callerId } = data;
+    console.log('---callRejected---', data);
+    const callerSocketId = userSocketMap[callerId];
+    if (callerSocketId) {
+      io.to(callerSocketId).emit('callRejected', { channelName });
+      console.log(`Call rejected by ${callerId}`);
+    } else {
+      console.log(`No socket found for caller ${callerId}`);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log("User Disconnected:", socket.id);
+    for (let userId in userSocketMap) {
+      if (userSocketMap[userId] === socket.id) {
+        delete userSocketMap[userId];
+        break;
+      }
+    }
   });
 });
 
